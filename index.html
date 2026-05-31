@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Bot - QR Login</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            text-align: center;
+        }
+        
+        .logo {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #128C7E;
+            margin-bottom: 10px;
+            font-size: 24px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        #qrcode-container {
+            margin: 20px 0;
+            min-height: 250px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #qr-image {
+            max-width: 100%;
+            height: auto;
+            border-radius: 10px;
+            border: 2px solid #eee;
+            padding: 10px;
+            display: none;
+        }
+        
+        #qr-image.loaded {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: scale(0.95); }
+            to { opacity: 1; transform: scale(1); }
+        }
+        
+        #status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 14px;
+            line-height: 1.5;
+            min-height: 50px;
+        }
+        
+        #status.loading {
+            background: #e3f2fd;
+            color: #1976D2;
+            border: 1px solid #bbdefb;
+        }
+        
+        #status.success {
+            background: #e8f5e9;
+            color: #388E3C;
+            border: 1px solid #c8e6c9;
+        }
+        
+        #status.error {
+            background: #ffebee;
+            color: #C62828;
+            border: 1px solid #ffcdd2;
+        }
+        
+        #status.warning {
+            background: #fff3e0;
+            color: #EF6C00;
+            border: 1px solid #ffe0b2;
+        }
+        
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #128C7E;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .api-test {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: left;
+        }
+        
+        .api-test h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+        
+        .api-form input, .api-form textarea {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        
+        .api-form textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        
+        .api-form button {
+            width: 100%;
+            padding: 12px;
+            background: #25D366;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .api-form button:hover {
+            background: #128C7E;
+        }
+        
+        .api-form button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .api-response {
+            margin-top: 15px;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            display: none;
+        }
+        
+        .api-response.show {
+            display: block;
+        }
+        
+        .footer {
+            margin-top: 30px;
+            font-size: 12px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">💬</div>
+        <h1>WhatsApp Bot</h1>
+        <p class="subtitle">Scan QR code untuk menghubungkan WhatsApp Anda</p>
+        
+        <div id="qrcode-container">
+            <div id="loader" class="loader"></div>
+            <img id="qr-image" src="" alt="QR Code WhatsApp" />
+        </div>
+        
+        <div id="status" class="loading">
+            🔌 Menghubungkan ke WhatsApp...
+        </div>
+        
+        <div class="api-test">
+            <h3>🧪 Test API</h3>
+            <form class="api-form" id="testForm">
+                <input type="text" id="number" placeholder="Nomor WhatsApp (contoh: 628123456789)" required />
+                <textarea id="message" placeholder="Pesan yang akan dikirim..." required></textarea>
+                <button type="submit" id="sendBtn">Kirim Pesan</button>
+            </form>
+            <pre id="apiResponse" class="api-response"></pre>
+        </div>
+        
+        <div class="footer">
+            <p>Server: <strong id="serverStatus">Connecting...</strong></p>
+            <p style="margin-top:5px">Port: 5000 | <a href="/api?nohp=628123456789&pesan=Halo" target="_blank">Docs API</a></p>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const qrImage = document.getElementById('qr-image');
+        const statusEl = document.getElementById('status');
+        const loader = document.getElementById('loader');
+        const serverStatus = document.getElementById('serverStatus');
+        const testForm = document.getElementById('testForm');
+        const sendBtn = document.getElementById('sendBtn');
+        const apiResponse = document.getElementById('apiResponse');
+
+        // Update status UI
+        function updateStatus(message, type = 'loading') {
+            statusEl.textContent = message;
+            statusEl.className = type;
+        }
+
+        // Socket event handlers
+        socket.on('connect', () => {
+            console.log('✅ Socket connected');
+            serverStatus.textContent = 'Connected';
+            serverStatus.style.color = '#388E3C';
+            socket.emit('checkStatus');
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error('❌ Socket connection error:', err.message);
+            serverStatus.textContent = 'Disconnected';
+            serverStatus.style.color = '#C62828';
+            updateStatus('⚠️ Gagal terhubung ke server. Refresh halaman untuk mencoba lagi.', 'error');
+        });
+
+        socket.on('qr', (qr) => {
+            console.log('📱 QR Code received');
+            loader.style.display = 'none';
+            qrImage.src = qr;
+            qrImage.classList.add('loaded');
+            qrImage.style.display = 'block';
+            updateStatus('📱 Silakan scan QR code dengan WhatsApp Anda:\n1. Buka WhatsApp di HP\n2. Menu → Perangkat Tertaut\n3. Tap "Tautkan Perangkat"\n4. Arahkan kamera ke QR code', 'warning');
+        });
+
+        socket.on('ready', (message) => {
+            console.log('✅ Client ready:', message);
+            loader.style.display = 'none';
+            qrImage.style.display = 'none';
+            qrImage.classList.remove('loaded');
+            updateStatus(message || '✅ WhatsApp siap digunakan! Anda bisa kirim pesan via API.', 'success');
+        });
+
+        socket.on('disconnected', (message) => {
+            console.log('🔌 Disconnected:', message);
+            loader.style.display = 'block';
+            qrImage.style.display = 'none';
+            qrImage.classList.remove('loaded');
+            updateStatus(message || '❌ Terputus. Memuat ulang QR code...', 'error');
+        });
+
+        socket.on('status', (data) => {
+            console.log('📊 Status update:', data);
+            if (data.status === 'ready') {
+                updateStatus(data.message, 'success');
+                loader.style.display = 'none';
+                qrImage.style.display = 'none';
+            }
+        });
+
+        // Request status saat halaman load
+        window.addEventListener('load', () => {
+            console.log('🔄 Page loaded, requesting status...');
+            socket.emit('checkStatus');
+        });
+
+        // Handle form submission untuk test API
+        testForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const number = document.getElementById('number').value.trim();
+            const message = document.getElementById('message').value.trim();
+            
+            if (!number || !message) {
+                updateStatus('⚠️ Nomor dan pesan wajib diisi!', 'error');
+                return;
+            }
+
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Mengirim...';
+            apiResponse.classList.remove('show');
+
+            try {
+                const response = await fetch('/api', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ number, message })
+                });
+                
+                const result = await response.json();
+                apiResponse.textContent = JSON.stringify(result, null, 2);
+                apiResponse.classList.add('show');
+                
+                if (result.status === 'berhasil terkirim') {
+                    updateStatus('✅ Pesan berhasil dikirim!', 'success');
+                } else {
+                    updateStatus(`⚠️ ${result.pesan}`, 'warning');
+                }
+            } catch (error) {
+                console.error('❌ API Error:', error);
+                apiResponse.textContent = `Error: ${error.message}`;
+                apiResponse.classList.add('show');
+                updateStatus('❌ Gagal mengirim pesan. Cek console untuk detail.', 'error');
+            } finally {
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Kirim Pesan';
+            }
+        });
+
+        // Auto-hide API response after 10 seconds
+        let responseTimeout;
+        apiResponse.addEventListener('click', () => {
+            clearTimeout(responseTimeout);
+            apiResponse.classList.remove('show');
+        });
+    </script>
+</body>
+</html>
