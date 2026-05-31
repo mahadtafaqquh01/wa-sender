@@ -1,16 +1,11 @@
 {
   "name": "wa-api",
   "version": "1.0.0",
-  "description": "WhatsApp API ",
+  "description": "",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "node app.js",
-    "postinstall": "puppeteer browsers install chrome"
-  },
-  "engines": {
-    "node": ">=18.x",
-    "npm": ">=9.x"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node app"
   },
   "author": "",
   "license": "ISC",
@@ -18,7 +13,7 @@
     "body-parser": "^1.20.2",
     "express": "^4.19.2",
     "fs-extra": "^11.2.0",
-    "puppeteer-core": "^21.0.0",
+    "puppeteer": "^21.0.0",
     "qrcode": "^1.5.3",
     "qrcode-terminal": "^0.12.0",
     "socket.io": "^4.7.5",
