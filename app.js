@@ -6,6 +6,8 @@ const socketIO = require('socket.io');
 const fs = require('fs-extra');
 const path = require('path');
 
+const volumePath = process.env.RAILWAY_VOLUME_MOUNT_PATH || process.env.AUTH_PATH || './.wwebjs_auth';
+const clientId = process.env.WHATSAPP_CLIENT_ID || 'default-bot';
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
@@ -67,8 +69,10 @@ const createClient = () => {
     
     const newClient = new Client({
         authStrategy: new LocalAuth({
-            clientId: "YOUR_CLIENT_ID", // Ganti dengan ID unik Anda
-            dataPath: "./.wwebjs_auth"
+            // clientId: "YOUR_CLIENT_ID", // Ganti dengan ID unik Anda
+            // dataPath: "./.wwebjs_auth"
+             clientId: clientId,  // Gunakan env var, bukan hardcoded
+             dataPath: path.join(volumePath, '.wwebjs_auth')
         }),
         puppeteer: {
             headless: true,
@@ -141,7 +145,8 @@ const createClient = () => {
 
         try {
             await newClient.destroy();
-            const sessionPath = path.join(__dirname, '.wwebjs_auth', 'session-YOUR_CLIENT_ID');
+            const sessionPath = path.join(volumePath, '.wwebjs_auth', `session-${clientId}`);
+            // const sessionPath = path.join(__dirname, '.wwebjs_auth', 'session-YOUR_CLIENT_ID');
             
             if (fs.existsSync(sessionPath)) {
                 console.log('🗑️ Cleaning up session...');
@@ -299,6 +304,19 @@ const api = async (req, res) => {
 // Route API
 app.post('/api', api);
 app.get('/api', api);
+app.get('/debug/session', (req, res) => {
+    const sessionPath = path.join(volumePath, '.wwebjs_auth', `session-${clientId}`);
+    const exists = fs.existsSync(sessionPath);
+    
+    res.json({
+        volumePath,
+        clientId,
+        sessionPath,
+        sessionExists: exists,
+        clientStatus,
+        hasInfo: client ? !!client.info : false
+    });
+});
 
 // Route halaman utama
 app.get('/', (req, res) => {
