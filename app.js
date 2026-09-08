@@ -164,12 +164,14 @@ const createClient = () => {
 
         try {
             await newClient.destroy();
+
             if (isLogout) {
                 const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${CLIENT_ID}`);
                 if (fs.existsSync(sessionPath)) {
                     console.log('🗑️ Cleaning up session folder after logout...');
                     await renameAndDeleteDirectory(sessionPath);
                 }
+
             }
         } catch (error) {
             console.error('❌ Error during cleanup:', error);
