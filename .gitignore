@@ -28,3 +28,8 @@ Homestead.json
 .env.production
 .phpactor.json
 auth.json
+.wwebjs_auth/
+auth_info_baileys/
+.baileys_auth/
+session/
+
