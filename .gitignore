@@ -28,3 +28,9 @@ Homestead.json
 .env.production
 .phpactor.json
 auth.json
+
+# WhatsApp Web Auth & Cache
+.wwebjs_auth/
+.wwebjs_cache/
+baileys_auth/
+*_temp/

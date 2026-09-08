@@ -1,4 +1,11 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    Browsers
+} = require('@whiskeysockets/baileys');
+const pino = require('pino');
 const qrcode = require('qrcode');
 const express = require('express');
 const http = require('http');
@@ -15,38 +22,15 @@ const io = socketIO(server, {
     }
 });
 
-const CLIENT_ID = process.env.WA_CLIENT_ID || "YOUR_CLIENT_ID";
 let clientStatus = 'initializing';
 let clientStatusMessage = 'Sedang memulai WhatsApp client...';
 let lastQRUrl = '';
-let client = null; // Pastikan initialized
+let sock = null;
+let isConnecting = false;
 
-// Fungsi untuk rename & delete directory dengan retry
-const renameAndDeleteDirectory = async (directoryPath, retries = 10, delay = 2000) => {
-    const tempDirPath = directoryPath + '_temp';
-    
-    for (let i = 0; i < retries; i++) {
-        try {
-            if (fs.existsSync(directoryPath)) {
-                await fs.rename(directoryPath, tempDirPath);
-            }
-            if (fs.existsSync(tempDirPath)) {
-                await fs.remove(tempDirPath);
-            }
-            return;
-        } catch (err) {
-            if (err.code === 'EBUSY' && i < retries - 1) {
-                console.warn(`🔄 File is busy, retrying (${i + 1}/${retries})...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-            } else {
-                console.error(`❌ Failed to delete directory after ${i + 1} attempts:`, err);
-                throw err;
-            }
-        }
-    }
-};
+const AUTH_FOLDER = path.join(__dirname, 'baileys_auth');
 
-// Fungsi untuk broadcast status ke semua socket
+// Broadcast status ke semua socket terhubung
 const broadcastStatus = (status, message, extra = {}) => {
     clientStatus = status;
     clientStatusMessage = message;
@@ -66,175 +50,134 @@ const broadcastStatus = (status, message, extra = {}) => {
     }
 };
 
-// Fungsi membuat client WhatsApp
-const createClient = () => {
-    console.log('🔄 Creating new WhatsApp client...');
-    broadcastStatus('initializing', 'Sedang menyiapkan browser dan WhatsApp client...');
-    
-    const puppeteerArgs = [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu',
-        '--disable-extensions'
-    ];
+// Fungsi membuat dan menghubungkan client Baileys
+async function connectToWhatsApp() {
+    if (isConnecting) return;
+    isConnecting = true;
 
-    const puppeteerConfig = {
-        headless: true,
-        args: puppeteerArgs
-    };
+    try {
+        console.log('🔄 Initializing Baileys WhatsApp client...');
+        broadcastStatus('initializing', 'Menyiapkan sesi WhatsApp...');
 
-    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-        puppeteerConfig.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-    }
+        // Pastikan folder auth siap
+        await fs.ensureDir(AUTH_FOLDER);
+        const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
-    const newClient = new Client({
-        authStrategy: new LocalAuth({
-            clientId: CLIENT_ID,
-            dataPath: "./.wwebjs_auth"
-        }),
-        puppeteer: puppeteerConfig,
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
-        },
-        qrMaxRetries: 5,
-        restartOnAuthFail: true
-    });
-
-    // Event: QR Code
-    newClient.on('qr', (qr) => {
-        console.log('📱 QR Code received, generating data URL...');
-        qrcode.toDataURL(qr, (err, url) => {
-            if (err) {
-                console.error('❌ Failed to generate QR code:', err);
-                broadcastStatus('error', 'Gagal memproses QR code: ' + err.message);
-                return;
-            }
-            lastQRUrl = url;
-            console.log('✅ QR Code generated, broadcasting...');
-            broadcastStatus('qr', 'Silakan scan QR code');
-        });
-    });
-
-    // Event: Loading
-    newClient.on('loading_screen', (percent, message) => {
-        console.log(`⏳ Loading: ${percent}% - ${message}`);
-        broadcastStatus('loading', `Loading WhatsApp: ${percent}% - ${message || ''}`);
-    });
-
-    // Event: Authenticated
-    newClient.on('authenticated', () => {
-        console.log('✅ Client authenticated!');
-        broadcastStatus('loading', 'Autentikasi berhasil! Sedang memuat data WhatsApp...');
-    });
-
-    // Event: Auth Failure
-    newClient.on('auth_failure', (msg) => {
-        console.error('❌ Authentication failure:', msg);
-        broadcastStatus('error', 'Autentikasi gagal. Silakan muat ulang dan scan QR kembali.');
-    });
-
-    // Event: Ready
-    newClient.on('ready', () => {
-        console.log('✅✅✅ CLIENT IS READY! ✅✅✅');
-        broadcastStatus('ready', 'WhatsApp terhubung dan siap digunakan!');
-        lastQRUrl = '';
-        
-        setTimeout(async () => {
-            try {
-                const info = await newClient.info;
-                console.log('📱 WhatsApp Info:', info);
-            } catch (err) {
-                console.error('⚠️ Could not get client info:', err);
-            }
-        }, 1000);
-    });
-
-    // Event: Disconnected
-    newClient.on('disconnected', async (reason) => {
-        console.log('🔌 Client disconnected:', reason);
-        const isLogout = reason === 'LOGOUT' || String(reason).toUpperCase().includes('LOGOUT');
-        const disconnectMsg = isLogout ? 'Client was logged out' : `Client terputus (${reason || 'koneksi terputus'})`;
-        broadcastStatus('disconnected', disconnectMsg);
-
+        let version = [2, 3000, 1015901307];
         try {
-            await newClient.destroy();
-            if (isLogout) {
-                const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${CLIENT_ID}`);
-                if (fs.existsSync(sessionPath)) {
-                    console.log('🗑️ Cleaning up session folder after logout...');
-                    await renameAndDeleteDirectory(sessionPath);
+            const fetched = await fetchLatestBaileysVersion();
+            version = fetched.version;
+            console.log(`📱 Baileys version: v${version.join('.')}, isLatest: ${fetched.isLatest}`);
+        } catch (e) {
+            console.warn('⚠️ Could not fetch latest WA version, using fallback:', e.message);
+        }
+
+        sock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+            auth: state,
+            browser: Browsers.ubuntu('Chrome'),
+            syncFullHistory: false,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000
+        });
+
+        // Simpan credentials saat terupdate
+        sock.ev.on('creds.update', saveCreds);
+
+        // Pantau perubahan koneksi
+        sock.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect, qr } = update;
+
+            if (qr) {
+                console.log('📱 QR code diterima dari Baileys, mengonversi ke gambar...');
+                try {
+                    lastQRUrl = await qrcode.toDataURL(qr);
+                    console.log('✅ QR Code berhasil dibuat, broadcasting...');
+                    broadcastStatus('qr', 'Silakan scan QR code dengan WhatsApp');
+                } catch (err) {
+                    console.error('❌ Gagal menghasilkan QR data URL:', err);
+                    broadcastStatus('error', 'Gagal membuat gambar QR: ' + err.message);
                 }
             }
-        } catch (error) {
-            console.error('❌ Error during cleanup:', error);
-        }
 
-        // Reinitialize setelah delay - createClient() otomatis panggil initialize()
-        setTimeout(() => {
-            console.log('🔄 Reinitializing client...');
-            client = createClient();
-        }, 8000);
-    });
-
-    // Event: Change State
-    newClient.on('change_state', (state) => {
-        console.log('📊 WhatsApp state changed to:', state);
-        if (state === 'CONNECTED' || state === 'BREAKPOINT') {
-            if (clientStatus !== 'ready') {
-                console.log('⚠️ State is CONNECTED but ready event did not fire. Forcing status update...');
-                broadcastStatus('ready', 'WhatsApp terhubung dan siap digunakan!');
+            if (connection === 'connecting') {
+                console.log('⏳ Sedang menghubungkan ke server WhatsApp...');
+                broadcastStatus('loading', 'Sedang menghubungkan ke server WhatsApp...');
             }
-        }
-    });
 
-    // Event: Change Battery
-    newClient.on('change_battery', (batteryInfo) => {
-        const { battery, plugged } = batteryInfo;
-        console.log(`🔋 Battery: ${battery}% | Charging: ${plugged}`);
-    });
+            if (connection === 'open') {
+                console.log('✅✅✅ WHATSAPP IS CONNECTED & READY! ✅✅✅');
+                lastQRUrl = '';
+                isConnecting = false;
+                const phone = sock.user?.id ? sock.user.id.split(':')[0] : 'WhatsApp User';
+                const name = sock.user?.name || phone;
+                broadcastStatus('ready', `WhatsApp terhubung sebagai ${name} (${phone})! Siap digunakan.`);
+            }
 
-    // Event: Message
-    newClient.on('message', (message) => {
-        console.log('💬 Message received:', message.body);
-    });
+            if (connection === 'close') {
+                isConnecting = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const errorDetail = lastDisconnect?.error?.message || lastDisconnect?.error || 'Koneksi terputus';
+                console.log(`🔌 Koneksi WhatsApp tertutup. StatusCode: ${statusCode}, Detail: ${errorDetail}`);
 
-    console.log('📱 Initializing client...');
-    newClient.initialize().catch((err) => {
-        console.error('❌ Gagal menginisialisasi WhatsApp Client:', err);
-        const errMsg = err && err.message ? err.message : String(err);
-        let helpText = 'Gagal menjalankan browser Puppeteer.';
-        if (errMsg.includes('error while loading shared libraries') || errMsg.includes('Could not find Chromium') || errMsg.includes('Failed to launch')) {
-            helpText = 'Chromium gagal berjalan di server. Pastikan dependensi Linux (libnss3, libasound2, dsb) telah terpasang di VPS Hostinger Anda.';
-        }
-        broadcastStatus('error', `${helpText} (${errMsg})`, { detail: errMsg });
-    });
-    
-    return newClient;
-};
+                if (statusCode === DisconnectReason.loggedOut) {
+                    console.log('🚪 WhatsApp di-logout dari perangkat. Membersihkan sesi...');
+                    broadcastStatus('disconnected', 'Client was logged out. Memuat ulang QR code...');
+                    try {
+                        await fs.remove(AUTH_FOLDER);
+                    } catch (e) {
+                        console.error('Gagal menghapus folder sesi:', e);
+                    }
+                    setTimeout(() => {
+                        connectToWhatsApp();
+                    }, 3000);
+                } else {
+                    console.log('🔄 Reconnecting WhatsApp dalam 4 detik...');
+                    broadcastStatus('loading', 'Koneksi terputus sesaat. Menghubungkan ulang...');
+                    setTimeout(() => {
+                        connectToWhatsApp();
+                    }, 4000);
+                }
+            }
+        });
 
-// Inisialisasi client pertama kali
-client = createClient();
+        // Event pesan masuk (opsional log)
+        sock.ev.on('messages.upsert', async (m) => {
+            const msg = m.messages && m.messages[0];
+            if (msg && !msg.key.fromMe && m.type === 'notify') {
+                const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+                console.log('💬 Pesan masuk dari:', msg.key.remoteJid, '-', text);
+            }
+        });
+
+    } catch (err) {
+        isConnecting = false;
+        console.error('❌ Fatal error initializing Baileys:', err);
+        broadcastStatus('error', 'Gagal menginisialisasi WhatsApp client: ' + err.message);
+        setTimeout(() => {
+            connectToWhatsApp();
+        }, 8000);
+    }
+}
+
+// Mulai koneksi
+connectToWhatsApp();
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// API Endpoint - PERBAIKAN VALIDASI
+// Endpoint API Kirim Pesan
 const api = async (req, res) => {
     console.log('📩 API Request received:', req.method, req.query, req.body);
-    
-    // Terima berbagai format parameter
+
     let nohp = req.query.nohp || req.query.number || req.body.nohp || req.body.number;
     const pesan = req.query.pesan || req.query.message || req.body.pesan || req.body.message;
 
     try {
-        // Validasi input - PERBAIKAN DI SINI
         if (!nohp) {
             return res.status(400).json({ 
                 status: "error", 
@@ -249,65 +192,46 @@ const api = async (req, res) => {
             });
         }
 
-        // Konversi ke string dan trim
-        nohp = String(nohp).trim();
-        const messageText = String(pesan).trim();
-
-        // Format nomor WhatsApp
-        let formattedNumber = nohp;
-        if (nohp.startsWith('0')) {
-            formattedNumber = '62' + nohp.slice(1);
-        } else if (nohp.startsWith('+')) {
-            formattedNumber = nohp.slice(1);
-        }
-        
-        // Pastikan ada @c.us
-        if (!formattedNumber.includes('@c.us')) {
-            formattedNumber = formattedNumber + '@c.us';
-        }
-
-        console.log('📱 Formatted number:', formattedNumber);
-
-        // Cek status client - PERBAIKAN LOGIC
-        if (!client) {
-            console.error('❌ Client is null!');
-            return res.status(503).json({ 
-                status: "error", 
-                pesan: "WhatsApp client tidak terinisialisasi" 
-            });
-        }
-
-        // Cek apakah client ready dengan multiple methods
-        const isReady = clientStatus === 'ready' && client.info;
-        
+        // Cek kesiapan client Baileys
+        const isReady = clientStatus === 'ready' && sock && sock.user;
         if (!isReady) {
-            console.error('❌ Client not ready. Status:', clientStatus, 'Info:', client.info);
+            console.error('❌ Client not ready. Status:', clientStatus);
             return res.status(503).json({ 
                 status: "error", 
                 pesan: "WhatsApp client belum siap. Silakan scan QR code terlebih dahulu.",
                 debug: {
                     clientStatus,
-                    hasInfo: !!client.info,
+                    hasSock: !!sock,
                     isConnected: clientStatus === 'ready'
                 }
             });
         }
 
+        // Bersihkan dan format nomor telepon
+        let cleanNumber = String(nohp).replace(/[^0-9]/g, '');
+        if (cleanNumber.startsWith('0')) {
+            cleanNumber = '62' + cleanNumber.slice(1);
+        }
+
+        const jid = cleanNumber + '@s.whatsapp.net';
+        const messageText = String(pesan).trim();
+        console.log('📱 Mengirim ke JID:', jid);
+
         // Cek apakah nomor terdaftar di WhatsApp
         console.log('🔍 Checking if number is registered...');
-        const user = await client.isRegisteredUser(formattedNumber);
+        const [result] = await sock.onWhatsApp(cleanNumber);
 
-        if (user) {
-            console.log('✅ Number registered, sending message...');
-            await client.sendMessage(formattedNumber, messageText);
+        if (result && result.exists) {
+            console.log('✅ Number registered, sending message to:', result.jid);
+            await sock.sendMessage(result.jid, { text: messageText });
             console.log('✅ Message sent successfully!');
             res.json({ 
                 status: "berhasil terkirim", 
                 pesan: messageText,
-                to: formattedNumber 
+                to: result.jid 
             });
         } else {
-            console.log('⚠️ Number not registered on WhatsApp');
+            console.log('⚠️ Number not registered on WhatsApp:', cleanNumber);
             res.json({ 
                 status: "gagal terkirim", 
                 pesan: 'nomor wa tidak terdaftar' 
@@ -318,8 +242,7 @@ const api = async (req, res) => {
         res.status(500).json({ 
             status: 'error', 
             pesan: 'server error',
-            detail: process.env.NODE_ENV === 'development' ? error.message : undefined,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            detail: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
 };
@@ -328,12 +251,12 @@ const api = async (req, res) => {
 app.post('/api', api);
 app.get('/api', api);
 
-// Route halaman utama
+// Route halaman utama (UI)
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Helper untuk kirim status saat ini ke socket tertentu
+// Helper kirim status saat ini ke socket
 const sendCurrentStatus = (target) => {
     target.emit('status', { 
         status: clientStatus, 
@@ -357,11 +280,8 @@ const sendCurrentStatus = (target) => {
 // Socket.IO Connection Handler
 io.on('connection', (socket) => {
     console.log('🔗 Socket connected:', socket.id);
-
-    // Kirim status saat koneksi baru
     sendCurrentStatus(socket);
 
-    // Handler untuk request status dari frontend
     socket.on('checkStatus', () => {
         console.log('📋 checkStatus requested by:', socket.id);
         sendCurrentStatus(socket);
@@ -377,16 +297,16 @@ app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         whatsapp: {
+            engine: 'baileys',
             status: clientStatus,
             message: clientStatusMessage,
-            hasClient: !!client,
-            hasInfo: client ? !!client.info : false,
+            user: sock?.user || null,
             timestamp: new Date().toISOString()
         }
     });
 });
 
-// Error handling global
+// Global error handlers
 process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
