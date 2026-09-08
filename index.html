@@ -276,20 +276,54 @@
             updateStatus(message || '✅ WhatsApp siap digunakan! Anda bisa kirim pesan via API.', 'success');
         });
 
+        socket.on('loading', (message) => {
+            console.log('⏳ Loading:', message);
+            loader.style.display = 'block';
+            qrImage.style.display = 'none';
+            qrImage.classList.remove('loaded');
+            updateStatus(message || '⏳ Sedang memuat WhatsApp...', 'loading');
+        });
+
+        socket.on('client_error', (data) => {
+            console.error('❌ Client error:', data);
+            loader.style.display = 'none';
+            qrImage.style.display = 'none';
+            qrImage.classList.remove('loaded');
+            updateStatus(data.message || 'Terjadi kesalahan pada client WhatsApp', 'error');
+        });
+
         socket.on('disconnected', (message) => {
             console.log('🔌 Disconnected:', message);
             loader.style.display = 'block';
             qrImage.style.display = 'none';
             qrImage.classList.remove('loaded');
-            updateStatus(message || '❌ Terputus. Memuat ulang QR code...', 'error');
+            updateStatus(message || '❌ Terputus. Menghubungkan ulang...', 'warning');
         });
 
         socket.on('status', (data) => {
             console.log('📊 Status update:', data);
             if (data.status === 'ready') {
-                updateStatus(data.message, 'success');
+                updateStatus(data.message || 'WhatsApp terhubung dan siap digunakan!', 'success');
                 loader.style.display = 'none';
                 qrImage.style.display = 'none';
+                qrImage.classList.remove('loaded');
+            } else if (data.status === 'qr') {
+                // handled by qr event
+            } else if (data.status === 'error') {
+                updateStatus(data.message || 'Terjadi kesalahan pada WhatsApp', 'error');
+                loader.style.display = 'none';
+                qrImage.style.display = 'none';
+                qrImage.classList.remove('loaded');
+            } else if (data.status === 'disconnected') {
+                updateStatus(data.message || 'Client terputus. Menghubungkan ulang...', 'warning');
+                loader.style.display = 'block';
+                qrImage.style.display = 'none';
+                qrImage.classList.remove('loaded');
+            } else if (data.status === 'initializing' || data.status === 'loading') {
+                updateStatus(data.message || 'Sedang menghubungkan ke WhatsApp...', 'loading');
+                loader.style.display = 'block';
+                qrImage.style.display = 'none';
+                qrImage.classList.remove('loaded');
             }
         });
 
