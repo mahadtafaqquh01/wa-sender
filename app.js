@@ -65,6 +65,7 @@ async function connectToWhatsApp() {
 
         let version = [2, 3000, 1015901307];
         try {
+<<<<<<< HEAD
             const fetched = await fetchLatestBaileysVersion();
             version = fetched.version;
             console.log(`📱 Baileys version: v${version.join('.')}, isLatest: ${fetched.isLatest}`);
@@ -100,7 +101,17 @@ async function connectToWhatsApp() {
                 } catch (err) {
                     console.error('❌ Gagal menghasilkan QR data URL:', err);
                     broadcastStatus('error', 'Gagal membuat gambar QR: ' + err.message);
+=======
+            await newClient.destroy();
+
+            if (isLogout) {
+                const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${CLIENT_ID}`);
+                if (fs.existsSync(sessionPath)) {
+                    console.log('🗑️ Cleaning up session folder after logout...');
+                    await renameAndDeleteDirectory(sessionPath);
+>>>>>>> 6161f446fcc7c30227b1c9a35a00e28cb5f56774
                 }
+
             }
 
             if (connection === 'connecting') {
