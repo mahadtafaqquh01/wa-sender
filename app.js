@@ -25,6 +25,7 @@ let lastQRUrl = '';
 let sock = null;
 let isConnecting = false;
 let reconnectTimeout = null;
+let conflictRetryCount = 0;
 
 // Fungsi untuk broadcast status ke semua socket client
 const broadcastStatus = (status, message, extra = {}) => {
@@ -148,6 +149,7 @@ const connectToWhatsApp = async () => {
             } else if (connection === 'open') {
                 console.log('✅✅✅ CLIENT IS READY! (Baileys) ✅✅✅');
                 lastQRUrl = '';
+                conflictRetryCount = 0; // Reset counter saat koneksi berhasil
                 if (reconnectTimeout) {
                     clearTimeout(reconnectTimeout);
                     reconnectTimeout = null;
@@ -165,10 +167,22 @@ const connectToWhatsApp = async () => {
                 console.log(`🔌 Koneksi terputus. Status Code: ${statusCode}, Alasan: ${reason}`);
 
                 if (isConflict) {
-                    console.warn('⚠️ Konflik sesi (Code 440): Sesi ini sedang aktif di proses/server lain.');
-                    console.warn('⚠️ Menghentikan reconnect otomatis untuk mencegah loop conflict.');
-                    broadcastStatus('error', 'Koneksi terputus karena sesi WhatsApp sedang aktif di proses/server lain (Conflict). Pastikan hanya ada 1 server yang berjalan.');
-                    return;
+                    console.warn(`⚠️ Konflik sesi (Code 440). Percobaan retry: ${conflictRetryCount}/1`);
+                    if (conflictRetryCount < 1) {
+                        conflictRetryCount++;
+                        console.log('⏳ Menunggu 10 detik untuk memastikan koneksi lama di server WhatsApp dilepas...');
+                        broadcastStatus('loading', 'Menunggu pelepasan koneksi lama dari server WhatsApp (10 detik)...');
+                        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+                        reconnectTimeout = setTimeout(() => {
+                            reconnectTimeout = null;
+                            connectToWhatsApp();
+                        }, 10000);
+                        return;
+                    } else {
+                        console.error('❌ Terdeteksi lebih dari 1 server/proses aktif secara bersamaan.');
+                        broadcastStatus('error', 'Koneksi terputus karena sesi WhatsApp sedang aktif di proses/server lain (Conflict). Pastikan hanya ada 1 proses node yang berjalan.');
+                        return;
+                    }
                 }
 
                 const disconnectMsg = isLogout
