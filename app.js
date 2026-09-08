@@ -15,7 +15,9 @@ const io = socketIO(server, {
     }
 });
 
-let clientStatus = 'not ready';
+const CLIENT_ID = process.env.WA_CLIENT_ID || "YOUR_CLIENT_ID";
+let clientStatus = 'initializing';
+let clientStatusMessage = 'Sedang memulai WhatsApp client...';
 let lastQRUrl = '';
 let client = null; // Pastikan initialized
 
@@ -45,42 +47,60 @@ const renameAndDeleteDirectory = async (directoryPath, retries = 10, delay = 200
 };
 
 // Fungsi untuk broadcast status ke semua socket
-const broadcastStatus = (status, message) => {
+const broadcastStatus = (status, message, extra = {}) => {
     clientStatus = status;
-    console.log(`📢 Broadcasting status: ${status} - ${message}`);
-    io.emit('status', { status, message });
+    clientStatusMessage = message;
+    console.log(`📢 Broadcasting status: [${status}] - ${message}`);
+    io.emit('status', { status, message, ...extra });
     
     if (status === 'ready') {
         io.emit('ready', message);
     } else if (status === 'qr') {
         io.emit('qr', lastQRUrl);
-    } else {
+    } else if (status === 'error') {
+        io.emit('client_error', { message, ...extra });
+    } else if (status === 'disconnected') {
         io.emit('disconnected', message);
+    } else {
+        io.emit('loading', message);
     }
 };
-
-
 
 // Fungsi membuat client WhatsApp
 const createClient = () => {
     console.log('🔄 Creating new WhatsApp client...');
+    broadcastStatus('initializing', 'Sedang menyiapkan browser dan WhatsApp client...');
     
+    const puppeteerArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process',
+        '--disable-gpu',
+        '--disable-extensions'
+    ];
+
+    const puppeteerConfig = {
+        headless: true,
+        args: puppeteerArgs
+    };
+
+    if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+        puppeteerConfig.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+    }
+
     const newClient = new Client({
         authStrategy: new LocalAuth({
-            clientId: "YOUR_CLIENT_ID", // Ganti dengan ID unik Anda
+            clientId: CLIENT_ID,
             dataPath: "./.wwebjs_auth"
         }),
-        puppeteer: {
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu'
-            ]
+        puppeteer: puppeteerConfig,
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html'
         },
         qrMaxRetries: 5,
         restartOnAuthFail: true
@@ -92,6 +112,7 @@ const createClient = () => {
         qrcode.toDataURL(qr, (err, url) => {
             if (err) {
                 console.error('❌ Failed to generate QR code:', err);
+                broadcastStatus('error', 'Gagal memproses QR code: ' + err.message);
                 return;
             }
             lastQRUrl = url;
@@ -103,27 +124,27 @@ const createClient = () => {
     // Event: Loading
     newClient.on('loading_screen', (percent, message) => {
         console.log(`⏳ Loading: ${percent}% - ${message}`);
-        broadcastStatus('loading', `Loading: ${percent}%`);
+        broadcastStatus('loading', `Loading WhatsApp: ${percent}% - ${message || ''}`);
     });
 
     // Event: Authenticated
     newClient.on('authenticated', () => {
         console.log('✅ Client authenticated!');
+        broadcastStatus('loading', 'Autentikasi berhasil! Sedang memuat data WhatsApp...');
     });
 
     // Event: Auth Failure
     newClient.on('auth_failure', (msg) => {
         console.error('❌ Authentication failure:', msg);
-        broadcastStatus('not ready', 'Authentication failed. Please scan QR again.');
+        broadcastStatus('error', 'Autentikasi gagal. Silakan muat ulang dan scan QR kembali.');
     });
 
-    // Event: Ready - GUNAKAN 'on' BUKAN 'once'
+    // Event: Ready
     newClient.on('ready', () => {
         console.log('✅✅✅ CLIENT IS READY! ✅✅✅');
         broadcastStatus('ready', 'WhatsApp terhubung dan siap digunakan!');
         lastQRUrl = '';
         
-        // Verifikasi bahwa client benar-benar ready
         setTimeout(async () => {
             try {
                 const info = await newClient.info;
@@ -137,33 +158,34 @@ const createClient = () => {
     // Event: Disconnected
     newClient.on('disconnected', async (reason) => {
         console.log('🔌 Client disconnected:', reason);
-        broadcastStatus('not ready', 'Client was logged out');
+        const isLogout = reason === 'LOGOUT' || String(reason).toUpperCase().includes('LOGOUT');
+        const disconnectMsg = isLogout ? 'Client was logged out' : `Client terputus (${reason || 'koneksi terputus'})`;
+        broadcastStatus('disconnected', disconnectMsg);
 
         try {
             await newClient.destroy();
-            const sessionPath = path.join(__dirname, '.wwebjs_auth', 'session-YOUR_CLIENT_ID');
-            
-            if (fs.existsSync(sessionPath)) {
-                console.log('🗑️ Cleaning up session...');
-                await renameAndDeleteDirectory(sessionPath);
+            if (isLogout) {
+                const sessionPath = path.join(__dirname, '.wwebjs_auth', `session-${CLIENT_ID}`);
+                if (fs.existsSync(sessionPath)) {
+                    console.log('🗑️ Cleaning up session folder after logout...');
+                    await renameAndDeleteDirectory(sessionPath);
+                }
             }
         } catch (error) {
             console.error('❌ Error during cleanup:', error);
         }
 
-        // Reinitialize setelah delay
+        // Reinitialize setelah delay - createClient() otomatis panggil initialize()
         setTimeout(() => {
             console.log('🔄 Reinitializing client...');
             client = createClient();
-            client.initialize();
-        }, 10000);
+        }, 8000);
     });
 
-    // Event: Change State - TAMBAHKAN INI
+    // Event: Change State
     newClient.on('change_state', (state) => {
         console.log('📊 WhatsApp state changed to:', state);
         if (state === 'CONNECTED' || state === 'BREAKPOINT') {
-            // Double check - jika ready event tidak firing
             if (clientStatus !== 'ready') {
                 console.log('⚠️ State is CONNECTED but ready event did not fire. Forcing status update...');
                 broadcastStatus('ready', 'WhatsApp terhubung dan siap digunakan!');
@@ -183,12 +205,18 @@ const createClient = () => {
     });
 
     console.log('📱 Initializing client...');
-    newClient.initialize();
+    newClient.initialize().catch((err) => {
+        console.error('❌ Gagal menginisialisasi WhatsApp Client:', err);
+        const errMsg = err && err.message ? err.message : String(err);
+        let helpText = 'Gagal menjalankan browser Puppeteer.';
+        if (errMsg.includes('error while loading shared libraries') || errMsg.includes('Could not find Chromium') || errMsg.includes('Failed to launch')) {
+            helpText = 'Chromium gagal berjalan di server. Pastikan dependensi Linux (libnss3, libasound2, dsb) telah terpasang di VPS Hostinger Anda.';
+        }
+        broadcastStatus('error', `${helpText} (${errMsg})`, { detail: errMsg });
+    });
     
     return newClient;
 };
-
-
 
 // Inisialisasi client pertama kali
 client = createClient();
@@ -305,35 +333,38 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
 });
 
+// Helper untuk kirim status saat ini ke socket tertentu
+const sendCurrentStatus = (target) => {
+    target.emit('status', { 
+        status: clientStatus, 
+        message: clientStatusMessage,
+        hasQR: !!lastQRUrl
+    });
+
+    if (clientStatus === 'ready') {
+        target.emit('ready', clientStatusMessage);
+    } else if (clientStatus === 'qr' && lastQRUrl) {
+        target.emit('qr', lastQRUrl);
+    } else if (clientStatus === 'error') {
+        target.emit('client_error', { message: clientStatusMessage });
+    } else if (clientStatus === 'disconnected') {
+        target.emit('disconnected', clientStatusMessage);
+    } else {
+        target.emit('loading', clientStatusMessage);
+    }
+};
+
 // Socket.IO Connection Handler
 io.on('connection', (socket) => {
     console.log('🔗 Socket connected:', socket.id);
 
     // Kirim status saat koneksi baru
-    if (clientStatus === 'ready') {
-        socket.emit('ready', 'Client is ready!');
-        socket.emit('status', { status: 'ready', message: 'WhatsApp terhubung!' });
-    } else if (clientStatus === 'qr') {
-        socket.emit('qr', lastQRUrl);
-        socket.emit('status', { status: 'qr', message: 'Silakan scan QR code' });
-    } else {
-        socket.emit('disconnected', 'Client was logged out');
-        socket.emit('status', { status: 'not ready', message: 'Client was logged out' });
-    }
+    sendCurrentStatus(socket);
 
     // Handler untuk request status dari frontend
     socket.on('checkStatus', () => {
         console.log('📋 checkStatus requested by:', socket.id);
-        if (clientStatus === 'ready') {
-            socket.emit('ready', 'Client is ready!');
-            socket.emit('status', { status: 'ready', message: 'WhatsApp terhubung!' });
-        } else if (clientStatus === 'qr') {
-            socket.emit('qr', lastQRUrl);
-            socket.emit('status', { status: 'qr', message: 'Silakan scan QR code' });
-        } else {
-            socket.emit('disconnected', 'Client was logged out');
-            socket.emit('status', { status: 'not ready', message: 'Client was logged out' });
-        }
+        sendCurrentStatus(socket);
     });
 
     socket.on('disconnect', () => {
@@ -347,6 +378,7 @@ app.get('/health', (req, res) => {
         status: 'ok',
         whatsapp: {
             status: clientStatus,
+            message: clientStatusMessage,
             hasClient: !!client,
             hasInfo: client ? !!client.info : false,
             timestamp: new Date().toISOString()
